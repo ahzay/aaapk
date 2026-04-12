@@ -15,6 +15,16 @@ func run(args ...string) (string, error) {
 	return s, nil
 }
 
+func Connected() bool {
+	out, _ := run("devices")
+	for _, line := range strings.Split(out, "\n")[1:] {
+		if strings.Contains(line, "device") {
+			return true
+		}
+	}
+	return false
+}
+
 func Install(path string) error {
 	out, err := run("install", path)
 	if err != nil {
@@ -26,14 +36,16 @@ func Install(path string) error {
 	return nil
 }
 
-func Connected() bool {
-	out, _ := run("devices")
-	for _, line := range strings.Split(out, "\n")[1:] {
-		if strings.Contains(line, "device") {
-			return true
-		}
+func InstallMultiple(paths []string) error {
+	args := append([]string{"install-multiple"}, paths...)
+	out, err := run(args...)
+	if err != nil {
+		return err
 	}
-	return false
+	if strings.Contains(out, "Failure") {
+		return fmt.Errorf(out)
+	}
+	return nil
 }
 
 func InstalledPackages() (map[string]bool, error) {
@@ -43,8 +55,7 @@ func InstalledPackages() (map[string]bool, error) {
 	}
 	pkgs := make(map[string]bool)
 	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if name, ok := strings.CutPrefix(line, "package:"); ok {
+		if name, ok := strings.CutPrefix(strings.TrimSpace(line), "package:"); ok {
 			pkgs[name] = true
 		}
 	}
@@ -66,4 +77,79 @@ func WriteFile(path, content string) error {
 	cmd := fmt.Sprintf("echo '%s' > %s", content, path)
 	_, err := run("shell", cmd)
 	return err
+}
+
+// --- device introspection (used by gplay source) ---
+
+func GetProperties() (map[string]string, error) {
+	out, err := run("shell", "getprop")
+	if err != nil {
+		return nil, fmt.Errorf("getprop: %w", err)
+	}
+	m := make(map[string]string)
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "[") {
+			continue
+		}
+		parts := strings.SplitN(line, ": ", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		k := strings.Trim(parts[0], "[]")
+		v := strings.Trim(parts[1], "[]")
+		m[k] = v
+	}
+	return m, nil
+}
+
+func ScreenSize() (width, height string) {
+	out, _ := run("shell", "wm", "size")
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "Physical size") || strings.Contains(line, "Override size") {
+			parts := strings.Split(line, ":")
+			if len(parts) == 2 {
+				wh := strings.Split(strings.TrimSpace(parts[1]), "x")
+				if len(wh) == 2 {
+					return strings.TrimSpace(wh[0]), strings.TrimSpace(wh[1])
+				}
+			}
+		}
+	}
+	return "1080", "2400"
+}
+
+func ScreenDensity() string {
+	out, _ := run("shell", "wm", "density")
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "Physical density") || strings.Contains(line, "Override density") {
+			parts := strings.Split(line, ":")
+			if len(parts) == 2 {
+				return strings.TrimSpace(parts[1])
+			}
+		}
+	}
+	return "420"
+}
+
+func Features() []string {
+	out, _ := run("shell", "pm", "list", "features")
+	var feats []string
+	for _, line := range strings.Split(out, "\n") {
+		if f, ok := strings.CutPrefix(strings.TrimSpace(line), "feature:"); ok {
+			feats = append(feats, f)
+		}
+	}
+	return feats
+}
+
+func Libraries() []string {
+	out, _ := run("shell", "pm", "list", "libraries")
+	var libs []string
+	for _, line := range strings.Split(out, "\n") {
+		if l, ok := strings.CutPrefix(strings.TrimSpace(line), "library:"); ok {
+			libs = append(libs, l)
+		}
+	}
+	return libs
 }

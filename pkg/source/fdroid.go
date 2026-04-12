@@ -9,17 +9,25 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/log"
 )
 
 type FDroid struct {
+	logged
 	name     string
 	baseURL  string
 	cacheDir string
 	index    *fdroidIndex
 }
 
-func NewFDroid(name, baseURL, cacheDir string) *FDroid {
-	return &FDroid{name: name, baseURL: strings.TrimRight(baseURL, "/"), cacheDir: cacheDir}
+func NewFDroid(name, baseURL, cacheDir string, l *log.Logger) *FDroid {
+	return &FDroid{
+		logged:   logged{log: l},
+		name:     name,
+		baseURL:  strings.TrimRight(baseURL, "/"),
+		cacheDir: cacheDir,
+	}
 }
 
 func (f *FDroid) Name() string { return f.name }
@@ -61,24 +69,29 @@ func (f *FDroid) cacheOK() bool {
 
 func (f *FDroid) load() error {
 	if f.index != nil {
+		f.debug("index already loaded", "repo", f.name)
 		return nil
 	}
 	if f.cacheOK() {
+		f.debug("loading index from cache", "repo", f.name, "path", f.cachePath())
 		data, err := os.ReadFile(f.cachePath())
 		if err == nil {
 			var idx fdroidIndex
 			if json.Unmarshal(data, &idx) == nil {
 				f.index = &idx
+				f.debug("cache hit", "repo", f.name, "apps", len(idx.Apps))
 				return nil
 			}
 		}
+		f.debug("cache read failed, fetching", "repo", f.name)
 	}
 	return f.fetch()
 }
 
 func (f *FDroid) fetch() error {
-	fmt.Fprintf(os.Stderr, "fetching %s index...\n", f.name)
-	resp, err := http.Get(f.baseURL + "/index-v1.json")
+	u := f.baseURL + "/index-v1.json"
+	f.info("fetching index", "repo", f.name, "url", u)
+	resp, err := http.Get(u)
 	if err != nil {
 		return err
 	}
@@ -96,6 +109,7 @@ func (f *FDroid) fetch() error {
 	}
 	os.MkdirAll(f.cacheDir, 0755)
 	os.WriteFile(f.cachePath(), data, 0644)
+	f.debug("index cached", "repo", f.name, "apps", len(idx.Apps), "bytes", len(data))
 	f.index = &idx
 	return nil
 }
@@ -142,6 +156,7 @@ func (f *FDroid) Search(query string) ([]App, error) {
 		return nil, err
 	}
 	q := strings.ToLower(query)
+	f.debug("searching", "repo", f.name, "query", q)
 	var out []App
 	for _, a := range f.index.Apps {
 		r := f.resolve(a)
@@ -154,6 +169,7 @@ func (f *FDroid) Search(query string) ([]App, error) {
 			out = append(out, r)
 		}
 	}
+	f.debug("search done", "repo", f.name, "hits", len(out))
 	return out, nil
 }
 
@@ -161,15 +177,18 @@ func (f *FDroid) Resolve(pkg string) (*App, error) {
 	if err := f.load(); err != nil {
 		return nil, err
 	}
+	f.debug("resolving", "repo", f.name, "pkg", pkg)
 	for _, a := range f.index.Apps {
 		if a.PackageName == pkg {
 			r := f.resolve(a)
 			if r.APKURL == "" {
 				return nil, fmt.Errorf("no apk for %s", pkg)
 			}
+			f.debug("resolved", "repo", f.name, "pkg", pkg, "ver", r.Version)
 			return &r, nil
 		}
 	}
+	f.debug("not found", "repo", f.name, "pkg", pkg)
 	return nil, nil
 }
 
@@ -177,6 +196,7 @@ func (f *FDroid) Download(app App, dest string) (string, error) {
 	if app.APKURL == "" {
 		return "", fmt.Errorf("no url for %s", app.PackageName)
 	}
+	f.debug("downloading", "repo", f.name, "pkg", app.PackageName, "url", app.APKURL)
 	resp, err := http.Get(app.APKURL)
 	if err != nil {
 		return "", err
@@ -192,6 +212,7 @@ func (f *FDroid) Download(app App, dest string) (string, error) {
 		return "", err
 	}
 	defer out.Close()
-	io.Copy(out, resp.Body)
+	n, _ := io.Copy(out, resp.Body)
+	f.debug("downloaded", "repo", f.name, "pkg", app.PackageName, "bytes", n)
 	return path, nil
 }

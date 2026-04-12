@@ -7,10 +7,11 @@ import (
 )
 
 type Repo struct {
-	Name    string `json:"name"`
-	Type    string `json:"type"` // "fdroid" for now
-	URL     string `json:"url"`
-	Enabled bool   `json:"enabled"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	URL       string `json:"url,omitempty"`
+	Dispenser string `json:"dispenser,omitempty"`
+	Enabled   bool   `json:"enabled"`
 }
 
 type Config struct {
@@ -23,7 +24,7 @@ func dir() string {
 	if err != nil {
 		d = os.TempDir()
 	}
-	return filepath.Join(d, "apk")
+	return filepath.Join(d, "aaapk")
 }
 
 func CacheDir() string {
@@ -31,7 +32,7 @@ func CacheDir() string {
 	if err != nil {
 		d = os.TempDir()
 	}
-	return filepath.Join(d, "apk")
+	return filepath.Join(d, "aaapk")
 }
 
 func Load() *Config {
@@ -57,6 +58,7 @@ func defaults() []Repo {
 	return []Repo{
 		{Name: "f-droid", Type: "fdroid", URL: "https://f-droid.org/repo", Enabled: true},
 		{Name: "izzy", Type: "fdroid", URL: "https://apt.izzysoft.de/fdroid/repo", Enabled: true},
+		{Name: "play", Type: "gplay", Dispenser: "https://auroraoss.com/api/auth", Enabled: true},
 	}
 }
 
@@ -64,10 +66,6 @@ func (c *Config) Save() error {
 	os.MkdirAll(filepath.Dir(c.path), 0755)
 	data, _ := json.MarshalIndent(c, "", "  ")
 	return os.WriteFile(c.path, data, 0644)
-}
-
-func (c *Config) Add(name, typ, url string) {
-	c.Repos = append(c.Repos, Repo{Name: name, Type: typ, URL: url, Enabled: true})
 }
 
 func (c *Config) Remove(name string) bool {

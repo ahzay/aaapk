@@ -6,6 +6,7 @@ require (
 	github.com/charmbracelet/log v1.0.0
 	github.com/ktr0731/go-fuzzyfinder v0.9.0
 	github.com/urfave/cli/v2 v2.27.7
+	google.golang.org/protobuf v1.36.11
 )
 
 require (

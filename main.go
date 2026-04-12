@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 
 var logger = log.NewWithOptions(os.Stderr, log.Options{
 	ReportTimestamp: false,
+	Level:           log.InfoLevel,
 })
 
 func sources() []source.Source {
@@ -25,7 +27,11 @@ func sources() []source.Source {
 	for _, r := range cfg.Enabled() {
 		switch r.Type {
 		case "fdroid":
-			out = append(out, source.NewFDroid(r.Name, r.URL, config.CacheDir()))
+			out = append(out, source.NewFDroid(r.Name, r.URL, config.CacheDir(), logger))
+		case "gplay":
+			out = append(out, source.NewGPlay(r.Name, r.Dispenser, logger))
+		default:
+			logger.Warn("unknown repo type", "repo", r.Name, "type", r.Type)
 		}
 	}
 	return out
@@ -44,153 +50,46 @@ func search(q string) []source.App {
 	return all
 }
 
-func pickInstall(apps []source.App, installed map[string]bool) (*source.App, error) {
-	if len(apps) == 0 {
-		return nil, fmt.Errorf("no results")
-	}
-	idx, err := fuzzyfinder.Find(apps,
-		func(i int) string {
-			a := apps[i]
-			name := a.Name
-			if name == "" {
-				name = a.PackageName
-			}
-			if installed[a.PackageName] {
-				return fmt.Sprintf("* %-30s  %s", name, a.Version)
-			}
-			return fmt.Sprintf("  %-30s  %s", name, a.Version)
-		},
-		fuzzyfinder.WithPreviewWindow(func(i, w, h int) string {
-			if i == -1 {
-				return ""
-			}
-			a := apps[i]
-			name := a.Name
-			if name == "" {
-				name = a.PackageName
-			}
-
-			sz := "?"
-			if a.Size > 0 {
-				sz = fmt.Sprintf("%.1f MB", float64(a.Size)/(1024*1024))
-			}
-			date := "?"
-			if a.Added > 0 {
-				date = time.Unix(a.Added/1000, 0).Format("2006-01-02")
-			}
-			status := "not installed"
-			if installed[a.PackageName] {
-				status = "INSTALLED"
-			}
-
-			var b strings.Builder
-			b.WriteString(name)
-			b.WriteString("\n")
-			b.WriteString(strings.Repeat("-", len(name)))
-			b.WriteString("\n\n")
-
-			b.WriteString(fmt.Sprintf("  %-12s %s\n", "package:", a.PackageName))
-			b.WriteString(fmt.Sprintf("  %-12s %s\n", "version:", a.Version))
-			b.WriteString(fmt.Sprintf("  %-12s %s\n", "date:", date))
-			b.WriteString(fmt.Sprintf("  %-12s %s\n", "size:", sz))
-			b.WriteString(fmt.Sprintf("  %-12s %s\n", "license:", a.License))
-			b.WriteString(fmt.Sprintf("  %-12s %s\n", "repo:", a.Source))
-			b.WriteString(fmt.Sprintf("  %-12s %s\n", "status:", status))
-
-			if a.Summary != "" {
-				b.WriteString("\n")
-				b.WriteString(wrap(a.Summary, w-4))
-				b.WriteString("\n")
-			}
-
-			return b.String()
-		}),
-	)
-	if err != nil {
-		return nil, err
-	}
-	return &apps[idx], nil
-}
-
-func pickUpdate(candidates []updateCandidate) ([]int, error) {
-	return fuzzyfinder.FindMulti(candidates,
-		func(i int) string {
-			c := candidates[i]
-			name := c.latest.Name
-			if name == "" {
-				name = c.pkg
-			}
-			return fmt.Sprintf("  %-30s  %s -> %s", name, c.current.Version, c.latest.Version)
-		},
-		fuzzyfinder.WithPreviewWindow(func(i, w, h int) string {
-			if i == -1 {
-				return ""
-			}
-			c := candidates[i]
-			name := c.latest.Name
-			if name == "" {
-				name = c.pkg
-			}
-
-			sz := "?"
-			if c.latest.Size > 0 {
-				sz = fmt.Sprintf("%.1f MB", float64(c.latest.Size)/(1024*1024))
-			}
-
-			var b strings.Builder
-			b.WriteString(name)
-			b.WriteString("\n")
-			b.WriteString(strings.Repeat("-", len(name)))
-			b.WriteString("\n\n")
-
-			b.WriteString(fmt.Sprintf("  %-12s %s\n", "package:", c.pkg))
-			b.WriteString(fmt.Sprintf("  %-12s %s\n", "installed:", c.current.Version))
-			b.WriteString(fmt.Sprintf("  %-12s %s\n", "available:", c.latest.Version))
-			b.WriteString(fmt.Sprintf("  %-12s %s\n", "size:", sz))
-			b.WriteString(fmt.Sprintf("  %-12s %s\n", "repo:", c.latest.Source))
-
-			if c.latest.Summary != "" {
-				b.WriteString("\n")
-				b.WriteString(wrap(c.latest.Summary, w-4))
-				b.WriteString("\n")
-			}
-
-			return b.String()
-		}),
-	)
-}
-
-func wrap(text string, width int) string {
-	if width <= 0 {
-		width = 60
-	}
-	words := strings.Fields(text)
-	var lines []string
-	line := "  "
-	for _, w := range words {
-		if len(line)+len(w)+1 > width && line != "  " {
-			lines = append(lines, line)
-			line = "  "
-		}
-		if line == "  " {
-			line += w
-		} else {
-			line += " " + w
+func sourceByName(name string) source.Source {
+	for _, s := range sources() {
+		if s.Name() == name {
+			return s
 		}
 	}
-	if line != "  " {
-		lines = append(lines, line)
-	}
-	return strings.Join(lines, "\n")
+	return nil
 }
 
 func download(app *source.App) (string, error) {
-	for _, s := range sources() {
-		if s.Name() == app.Source {
-			return s.Download(*app, os.TempDir())
+	s := sourceByName(app.Source)
+	if s == nil {
+		return "", fmt.Errorf("source %q not found", app.Source)
+	}
+	return s.Download(*app, os.TempDir())
+}
+
+// installPath handles both single-file and split-apk directories.
+func installPath(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return adb.Install(path)
+	}
+	entries, _ := os.ReadDir(path)
+	var apks []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".apk") {
+			apks = append(apks, filepath.Join(path, e.Name()))
 		}
 	}
-	return "", fmt.Errorf("source %q not found", app.Source)
+	if len(apks) == 0 {
+		return fmt.Errorf("no apk files found in %s", path)
+	}
+	if len(apks) == 1 {
+		return adb.Install(apks[0])
+	}
+	return adb.InstallMultiple(apks)
 }
 
 func requireDevice() error {
@@ -208,6 +107,8 @@ func queryFrom(c *cli.Context, label string) (string, error) {
 	return q, nil
 }
 
+// --- commands ---
+
 func cmdInstall(c *cli.Context) error {
 	if err := requireDevice(); err != nil {
 		return err
@@ -222,16 +123,19 @@ func cmdInstall(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
+
 	logger.Info("downloading", "pkg", a.PackageName, "ver", a.Version)
 	path, err := download(a)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(path)
+	defer os.RemoveAll(path)
+
 	logger.Info("installing", "pkg", a.PackageName)
-	if err := adb.Install(path); err != nil {
+	if err := installPath(path); err != nil {
 		return err
 	}
+
 	l, err := ledger.Load()
 	if err != nil {
 		logger.Warn("ledger load failed", "err", err)
@@ -261,9 +165,8 @@ func cmdUpdate(c *cli.Context) error {
 		return nil
 	}
 
-	var candidates []updateCandidate
-
 	srcs := sources()
+	var candidates []updateCandidate
 	for pkg, entry := range l {
 		for _, s := range srcs {
 			latest, err := s.Resolve(pkg)
@@ -300,12 +203,12 @@ func cmdUpdate(c *cli.Context) error {
 			continue
 		}
 		logger.Info("installing", "pkg", cand.pkg)
-		if err := adb.Install(path); err != nil {
+		if err := installPath(path); err != nil {
 			logger.Error("install failed", "pkg", cand.pkg, "err", err)
-			os.Remove(path)
+			os.RemoveAll(path)
 			continue
 		}
-		os.Remove(path)
+		os.RemoveAll(path)
 		l.Set(cand.pkg, cand.latest.Version, cand.latest.Source, cand.latest.VersionCode)
 		logger.Info("updated", "pkg", cand.pkg)
 	}
@@ -331,22 +234,42 @@ func cmdRepoList(c *cli.Context) error {
 		if !r.Enabled {
 			status = "off"
 		}
-		fmt.Printf("%-3s  %-15s  %s  %s\n", status, r.Name, r.Type, r.URL)
+		detail := r.URL
+		if r.Type == "gplay" {
+			detail = r.Dispenser
+		}
+		fmt.Printf("%-3s  %-15s  %-7s  %s\n", status, r.Name, r.Type, detail)
 	}
 	return nil
 }
 
 func cmdRepoAdd(c *cli.Context) error {
-	if c.NArg() < 2 {
-		return fmt.Errorf("usage: repo add <name> <url>")
+	if c.NArg() < 1 {
+		return fmt.Errorf("usage: repo add <name> [url or dispenser]")
 	}
 	name := c.Args().Get(0)
-	url := c.Args().Get(1)
-	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-		return fmt.Errorf("url must start with http:// or https://")
-	}
+	typ := c.String("type")
 	cfg := config.Load()
-	cfg.Add(name, "fdroid", url)
+
+	switch typ {
+	case "fdroid":
+		if c.NArg() < 2 {
+			return fmt.Errorf("usage: repo add --type fdroid <name> <url>")
+		}
+		u := c.Args().Get(1)
+		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			return fmt.Errorf("url must start with http:// or https://")
+		}
+		cfg.Repos = append(cfg.Repos, config.Repo{Name: name, Type: "fdroid", URL: u, Enabled: true})
+	case "gplay":
+		disp := "https://auroraoss.com/api/auth"
+		if c.NArg() >= 2 {
+			disp = c.Args().Get(1)
+		}
+		cfg.Repos = append(cfg.Repos, config.Repo{Name: name, Type: "gplay", Dispenser: disp, Enabled: true})
+	default:
+		return fmt.Errorf("unknown type %q (fdroid or gplay)", typ)
+	}
 	return cfg.Save()
 }
 
@@ -376,17 +299,162 @@ func cmdRepoToggle(enabled bool) cli.ActionFunc {
 	}
 }
 
+// --- fuzzyfinder UI ---
+
+func pickInstall(apps []source.App, installed map[string]bool) (*source.App, error) {
+	if len(apps) == 0 {
+		return nil, fmt.Errorf("no results")
+	}
+	idx, err := fuzzyfinder.Find(apps,
+		func(i int) string {
+			a := apps[i]
+			name := a.Name
+			if name == "" {
+				name = a.PackageName
+			}
+			mark := " "
+			if installed[a.PackageName] {
+				mark = "*"
+			}
+			return fmt.Sprintf("%s %-30s  %-10s  %s", mark, name, "["+a.Source+"]", a.Version)
+		},
+		fuzzyfinder.WithPreviewWindow(func(i, w, h int) string {
+			if i == -1 {
+				return ""
+			}
+			return appPreview(apps[i], installed[apps[i].PackageName], w)
+		}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &apps[idx], nil
+}
+
+func pickUpdate(candidates []updateCandidate) ([]int, error) {
+	return fuzzyfinder.FindMulti(candidates,
+		func(i int) string {
+			c := candidates[i]
+			name := c.latest.Name
+			if name == "" {
+				name = c.pkg
+			}
+			return fmt.Sprintf("  %-30s  %-10s  %s -> %s", name, "["+c.latest.Source+"]", c.current.Version, c.latest.Version)
+		},
+		fuzzyfinder.WithPreviewWindow(func(i, w, h int) string {
+			if i == -1 {
+				return ""
+			}
+			c := candidates[i]
+			name := c.latest.Name
+			if name == "" {
+				name = c.pkg
+			}
+			sz := sizeStr(c.latest.Size)
+			var b strings.Builder
+			b.WriteString(name + "\n" + strings.Repeat("-", len(name)) + "\n\n")
+			b.WriteString(fmt.Sprintf("  %-12s %s\n", "package:", c.pkg))
+			b.WriteString(fmt.Sprintf("  %-12s %s\n", "installed:", c.current.Version))
+			b.WriteString(fmt.Sprintf("  %-12s %s\n", "available:", c.latest.Version))
+			b.WriteString(fmt.Sprintf("  %-12s %s\n", "size:", sz))
+			b.WriteString(fmt.Sprintf("  %-12s %s\n", "repo:", c.latest.Source))
+			if c.latest.Summary != "" {
+				b.WriteString("\n" + wrap(c.latest.Summary, w-4) + "\n")
+			}
+			return b.String()
+		}),
+	)
+}
+
+func appPreview(a source.App, isInstalled bool, w int) string {
+	name := a.Name
+	if name == "" {
+		name = a.PackageName
+	}
+	status := "not installed"
+	if isInstalled {
+		status = "INSTALLED"
+	}
+	var b strings.Builder
+	b.WriteString(name + "\n" + strings.Repeat("-", len(name)) + "\n\n")
+	b.WriteString(fmt.Sprintf("  %-12s %s\n", "package:", a.PackageName))
+	b.WriteString(fmt.Sprintf("  %-12s %s\n", "version:", a.Version))
+	b.WriteString(fmt.Sprintf("  %-12s %s\n", "date:", dateStr(a.Added)))
+	b.WriteString(fmt.Sprintf("  %-12s %s\n", "size:", sizeStr(a.Size)))
+	b.WriteString(fmt.Sprintf("  %-12s %s\n", "license:", a.License))
+	b.WriteString(fmt.Sprintf("  %-12s %s\n", "repo:", a.Source))
+	b.WriteString(fmt.Sprintf("  %-12s %s\n", "status:", status))
+	if a.Summary != "" {
+		b.WriteString("\n" + wrap(a.Summary, w-4) + "\n")
+	}
+	return b.String()
+}
+
+func sizeStr(n int64) string {
+	if n <= 0 {
+		return "?"
+	}
+	return fmt.Sprintf("%.1f MB", float64(n)/(1024*1024))
+}
+
+func dateStr(ms int64) string {
+	if ms <= 0 {
+		return "?"
+	}
+	return time.Unix(ms/1000, 0).Format("2006-01-02")
+}
+
+func wrap(text string, width int) string {
+	if width <= 0 {
+		width = 60
+	}
+	words := strings.Fields(text)
+	var lines []string
+	line := "  "
+	for _, w := range words {
+		if len(line)+len(w)+1 > width && line != "  " {
+			lines = append(lines, line)
+			line = "  "
+		}
+		if line == "  " {
+			line += w
+		} else {
+			line += " " + w
+		}
+	}
+	if line != "  " {
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// --- entrypoint ---
+
 func main() {
 	app := &cli.App{
 		Name:  "aaapk",
 		Usage: "android package manager over adb",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "debug", Aliases: []string{"d"}, Usage: "enable debug logging"},
+		},
+		Before: func(c *cli.Context) error {
+			if c.Bool("debug") {
+				logger.SetLevel(log.DebugLevel)
+			}
+			return nil
+		},
 		Commands: []*cli.Command{
 			{Name: "install", Aliases: []string{"i"}, ArgsUsage: "<query>", Usage: "search, pick, download, install", Action: cmdInstall},
 			{Name: "update", Aliases: []string{"u"}, Usage: "check and update managed packages", Action: cmdUpdate},
-			{Name: "refresh", Usage: "re-fetch all repo indexes", Action: cmdRefresh},
+			{Name: "refresh", Usage: "re-fetch repo indexes", Action: cmdRefresh},
 			{Name: "repo", Usage: "manage repos", Subcommands: []*cli.Command{
 				{Name: "list", Aliases: []string{"ls"}, Action: cmdRepoList},
-				{Name: "add", ArgsUsage: "<name> <url>", Usage: "add an fdroid repo", Action: cmdRepoAdd},
+				{Name: "add", ArgsUsage: "<name> [url]", Usage: "add a repo",
+					Flags: []cli.Flag{
+						&cli.StringFlag{Name: "type", Aliases: []string{"t"}, Value: "fdroid", Usage: "fdroid or gplay"},
+					},
+					Action: cmdRepoAdd,
+				},
 				{Name: "rm", ArgsUsage: "<name>", Action: cmdRepoRm},
 				{Name: "enable", ArgsUsage: "<name>", Action: cmdRepoToggle(true)},
 				{Name: "disable", ArgsUsage: "<name>", Action: cmdRepoToggle(false)},
