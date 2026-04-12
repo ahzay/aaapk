@@ -1,6 +1,6 @@
 syntax = "proto2";
 
-option go_package = "github.com/ahzay/aaapk/pkg/gplay/proto";
+option go_package = "github.com/ahzay/aaapk/pkg/source/gplay/proto";
 
 message AndroidAppDeliveryData {
   optional int64 downloadSize = 1;

@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"github.com/ahzay/aaapk/pkg/adb"
-	pb "github.com/ahzay/aaapk/pkg/gplay/proto"
+	pb "github.com/ahzay/aaapk/pkg/source/gplay/proto"
 	"github.com/charmbracelet/log"
 	"google.golang.org/protobuf/proto"
 )

@@ -227,6 +227,26 @@ func cmdRefresh(c *cli.Context) error {
 	return nil
 }
 
+func cmdList(c *cli.Context) error {
+	if err := requireDevice(); err != nil {
+		logger.Error("device not connected")
+		return err
+	}
+	l, err := ledger.Load()
+	if err != nil {
+		logger.Error("failed to load ledger", "err", err)
+		return nil
+	}
+	if len(l) == 0 {
+		logger.Info("no managed packages")
+		return nil
+	}
+	for pkg, entry := range l {
+		fmt.Printf("%-40s  %-15s  %s\n", pkg, entry.Version, entry.Source)
+	}
+	return nil
+}
+
 func cmdRepoList(c *cli.Context) error {
 	cfg := config.Load()
 	for _, r := range cfg.Repos {
@@ -353,11 +373,11 @@ func pickUpdate(candidates []updateCandidate) ([]int, error) {
 			sz := sizeStr(c.latest.Size)
 			var b strings.Builder
 			b.WriteString(name + "\n" + strings.Repeat("-", len(name)) + "\n\n")
-			b.WriteString(fmt.Sprintf("  %-12s %s\n", "package:", c.pkg))
-			b.WriteString(fmt.Sprintf("  %-12s %s\n", "installed:", c.current.Version))
-			b.WriteString(fmt.Sprintf("  %-12s %s\n", "available:", c.latest.Version))
-			b.WriteString(fmt.Sprintf("  %-12s %s\n", "size:", sz))
-			b.WriteString(fmt.Sprintf("  %-12s %s\n", "repo:", c.latest.Source))
+			fmt.Fprintf(&b, "  %-12s %s\n", "package:", c.pkg)
+			fmt.Fprintf(&b, "  %-12s %s\n", "installed:", c.current.Version)
+			fmt.Fprintf(&b, "  %-12s %s\n", "available:", c.latest.Version)
+			fmt.Fprintf(&b, "  %-12s %s\n", "size:", sz)
+			fmt.Fprintf(&b, "  %-12s %s\n", "repo:", c.latest.Source)
 			if c.latest.Summary != "" {
 				b.WriteString("\n" + wrap(c.latest.Summary, w-4) + "\n")
 			}
@@ -447,6 +467,7 @@ func main() {
 			{Name: "install", Aliases: []string{"i"}, ArgsUsage: "<query>", Usage: "search, pick, download, install", Action: cmdInstall},
 			{Name: "update", Aliases: []string{"u"}, Usage: "check and update managed packages", Action: cmdUpdate},
 			{Name: "refresh", Usage: "re-fetch repo indexes", Action: cmdRefresh},
+			{Name: "list", Aliases: []string{"ls"}, Usage: "list managed packages", Action: cmdList},
 			{Name: "repo", Usage: "manage repos", Subcommands: []*cli.Command{
 				{Name: "list", Aliases: []string{"ls"}, Action: cmdRepoList},
 				{Name: "add", ArgsUsage: "<name> [url]", Usage: "add a repo",

@@ -39,9 +39,3 @@ func (l *logged) info(msg string, kv ...interface{}) {
 		l.log.Info(msg, kv...)
 	}
 }
-
-func (l *logged) warn(msg string, kv ...interface{}) {
-	if l.log != nil {
-		l.log.Warn(msg, kv...)
-	}
-}

@@ -31,7 +31,7 @@ func Install(path string) error {
 		return err
 	}
 	if strings.Contains(out, "Failure") {
-		return fmt.Errorf(out)
+		return fmt.Errorf("%s", out)
 	}
 	return nil
 }
@@ -43,7 +43,7 @@ func InstallMultiple(paths []string) error {
 		return err
 	}
 	if strings.Contains(out, "Failure") {
-		return fmt.Errorf(out)
+		return fmt.Errorf("%s", out)
 	}
 	return nil
 }
@@ -54,7 +54,7 @@ func InstalledPackages() (map[string]bool, error) {
 		return nil, err
 	}
 	pkgs := make(map[string]bool)
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if name, ok := strings.CutPrefix(strings.TrimSpace(line), "package:"); ok {
 			pkgs[name] = true
 		}
@@ -146,7 +146,7 @@ func Features() []string {
 func Libraries() []string {
 	out, _ := run("shell", "pm", "list", "libraries")
 	var libs []string
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if l, ok := strings.CutPrefix(strings.TrimSpace(line), "library:"); ok {
 			libs = append(libs, l)
 		}
