@@ -1,0 +1,6 @@
+{
+  "mise.enable": true,
+  "go.alternateTools": {
+    "go": "~/.local/share/mise/shims/go"
+  }
+}
