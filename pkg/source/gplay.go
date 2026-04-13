@@ -14,7 +14,6 @@ import (
 
 	"github.com/ahzay/aaapk/pkg/adb"
 	pb "github.com/ahzay/aaapk/pkg/source/gplay/proto"
-	"github.com/charmbracelet/log"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -31,7 +30,6 @@ const (
 )
 
 type GPlay struct {
-	logged
 	name         string
 	dispenserURL string
 
@@ -45,9 +43,8 @@ type GPlay struct {
 	ready bool
 }
 
-func NewGPlay(name, dispenserURL string, l *log.Logger) *GPlay {
+func NewGPlay(name, dispenserURL string) *GPlay {
 	return &GPlay{
-		logged:       logged{log: l},
 		name:         name,
 		dispenserURL: dispenserURL,
 	}
@@ -55,62 +52,43 @@ func NewGPlay(name, dispenserURL string, l *log.Logger) *GPlay {
 
 func (g *GPlay) Name() string { return g.name }
 
-// --- init orchestration ---
-
 func (g *GPlay) init() error {
 	if g.ready {
 		return nil
 	}
-	g.debug("init start", "source", g.name)
-
 	if err := g.loadDeviceProps(); err != nil {
-		return fmt.Errorf("device props: %w", err)
+		return fmt.Errorf("gplay %s device props: %w", g.name, err)
 	}
-
 	if err := g.dispenserAuth(); err != nil {
-		return fmt.Errorf("dispenser auth: %w", err)
+		return fmt.Errorf("gplay %s dispenser: %w", g.name, err)
 	}
 	g.authSubToken = g.authToken
-
 	if err := g.checkin(); err != nil {
-		return fmt.Errorf("checkin: %w", err)
+		return fmt.Errorf("gplay %s checkin: %w", g.name, err)
 	}
-
 	if err := g.uploadDeviceConfig(); err != nil {
-		return fmt.Errorf("upload config: %w", err)
+		return fmt.Errorf("gplay %s upload config: %w", g.name, err)
 	}
-
 	if err := g.toc(); err != nil {
-		return fmt.Errorf("toc: %w", err)
+		return fmt.Errorf("gplay %s toc: %w", g.name, err)
 	}
-
 	g.ready = true
-	g.debug("init done", "source", g.name)
 	return nil
 }
-
-// --- device props via adb package ---
 
 func (g *GPlay) loadDeviceProps() error {
 	if g.props != nil {
 		return nil
 	}
-	g.debug("loading device props")
-
 	gp, err := adb.GetProperties()
 	if err != nil {
-		return err
+		return fmt.Errorf("getprop: %w", err)
 	}
-	g.debug("raw props loaded", "count", len(gp))
 
 	w, h := adb.ScreenSize()
 	density := adb.ScreenDensity()
 	features := adb.Features()
 	libraries := adb.Libraries()
-
-	g.debug("screen", "w", w, "h", h, "density", density)
-	g.debug("features", "count", len(features))
-	g.debug("libraries", "count", len(libraries))
 
 	radio := gp["gsm.version.baseband"]
 	if radio == "" {
@@ -135,45 +113,42 @@ func (g *GPlay) loadDeviceProps() error {
 		"Build.ID":              gp["ro.build.id"],
 		"Build.BOOTLOADER":      gp["ro.bootloader"],
 		"UserReadableName":      gp["ro.product.manufacturer"] + " " + gp["ro.product.model"],
-
-		"Screen.Width":   w,
-		"Screen.Height":  h,
-		"Screen.Density": density,
-		"Platforms":      abis,
-
-		"TouchScreen":          "3",
-		"Keyboard":             "1",
-		"Navigation":           "1",
-		"ScreenLayout":         "2",
-		"HasHardKeyboard":      "false",
-		"HasFiveWayNavigation": "false",
-		"GL.Version":           "196610",
-		"GL.Extensions":        "",
-
-		"Features":        strings.Join(features, ","),
-		"SharedLibraries": strings.Join(libraries, ","),
-		"Locales":         "en,en_US",
-
+		"Screen.Width":          w,
+		"Screen.Height":         h,
+		"Screen.Density":        density,
+		"Platforms":             abis,
+		"TouchScreen":           "3",
+		"Keyboard":              "1",
+		"Navigation":            "1",
+		"ScreenLayout":          "2",
+		"HasHardKeyboard":       "false",
+		"HasFiveWayNavigation":  "false",
+		"GL.Version":            "196610",
+		"GL.Extensions":         "",
+		"Features":              strings.Join(features, ","),
+		"SharedLibraries":       strings.Join(libraries, ","),
+		"Locales":               "en,en_US",
 		"Client":                "android-google",
 		"GSF.version":           "223616055",
 		"Vending.version":       "82151710",
 		"Vending.versionString": "21.5.17-21 [0] [PR] 326734551",
-
-		"Roaming":      "mobile-notroaming",
-		"TimeZone":     "UTC-10",
-		"CellOperator": "310",
-		"SimOperator":  "38",
+		"Roaming":               "mobile-notroaming",
+		"TimeZone":              "UTC-10",
+		"CellOperator":          "310",
+		"SimOperator":           "38",
 	}
 	return nil
 }
 
-// --- dispenser ---
-
 func (g *GPlay) dispenserAuth() error {
-	g.debug("dispenser auth", "url", g.dispenserURL)
-	body, _ := json.Marshal(g.props)
-
-	req, _ := http.NewRequest("POST", g.dispenserURL, bytes.NewReader(body))
+	body, err := json.Marshal(g.props)
+	if err != nil {
+		return fmt.Errorf("marshal props: %w", err)
+	}
+	req, err := http.NewRequest("POST", g.dispenserURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("new request: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "com.aurora.store-4.8.1-73")
 	req.Header.Set("Accept", "application/json")
@@ -181,12 +156,12 @@ func (g *GPlay) dispenserAuth() error {
 
 	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
-		return fmt.Errorf("dispenser: %w", err)
+		return fmt.Errorf("request: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("dispenser: http %d: %s", resp.StatusCode, trunc(string(b), 200))
+		return fmt.Errorf("http %d: %s", resp.StatusCode, trunc(string(b), 200))
 	}
 
 	var dr struct {
@@ -194,18 +169,14 @@ func (g *GPlay) dispenserAuth() error {
 		AuthToken string `json:"authToken"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&dr); err != nil {
-		return fmt.Errorf("dispenser decode: %w", err)
+		return fmt.Errorf("decode response: %w", err)
 	}
 	g.email = dr.Email
 	g.authToken = dr.AuthToken
-	g.debug("dispenser ok", "email", g.email, "token", trunc(g.authToken, 30))
 	return nil
 }
 
-// --- checkin ---
-
 func (g *GPlay) checkin() error {
-	g.debug("checkin start")
 	sdkInt, _ := strconv.Atoi(g.props["Build.VERSION.SDK_INT"])
 	gsfVer, _ := strconv.Atoi(g.props["GSF.version"])
 
@@ -244,19 +215,22 @@ func (g *GPlay) checkin() error {
 
 	data, err := proto.Marshal(checkinReq)
 	if err != nil {
-		return fmt.Errorf("checkin marshal: %w", err)
+		return fmt.Errorf("marshal checkin: %w", err)
 	}
 
 	resp, err := http.Post(gpCheckinURL, "application/x-protobuf", bytes.NewReader(data))
 	if err != nil {
-		return fmt.Errorf("checkin: %w", err)
+		return fmt.Errorf("post checkin: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read checkin response: %w", err)
+	}
 
 	var checkinResp pb.AndroidCheckinResponse
 	if err := proto.Unmarshal(body, &checkinResp); err != nil {
-		return fmt.Errorf("checkin unmarshal: %w", err)
+		return fmt.Errorf("unmarshal checkin response: %w", err)
 	}
 
 	g.gsfID = checkinResp.GetAndroidId()
@@ -264,98 +238,112 @@ func (g *GPlay) checkin() error {
 	if checkinResp.DeviceCheckinConsistencyToken != nil {
 		g.checkinToken = *checkinResp.DeviceCheckinConsistencyToken
 	}
-	g.debug("checkin first pass", "gsfID", fmt.Sprintf("%x", g.gsfID))
 
-	// second checkin with account cookies
+	// second pass with account cookies
 	checkinReq.Id = ip64(int64(g.gsfID))
 	checkinReq.SecurityToken = &g.securityToken
 	checkinReq.AccountCookie = []string{"[" + g.email + "]", g.authToken}
 
-	data, _ = proto.Marshal(checkinReq)
+	data, err = proto.Marshal(checkinReq)
+	if err != nil {
+		return fmt.Errorf("marshal checkin2: %w", err)
+	}
 	resp2, err := http.Post(gpCheckinURL, "application/x-protobuf", bytes.NewReader(data))
 	if err != nil {
-		return fmt.Errorf("checkin2: %w", err)
+		return fmt.Errorf("post checkin2: %w", err)
 	}
 	resp2.Body.Close()
-	g.debug("checkin done")
 	return nil
 }
 
-// --- device config upload ---
-
 func (g *GPlay) uploadDeviceConfig() error {
-	g.debug("uploading device config")
 	upload := &pb.UploadDeviceConfigRequest{
 		DeviceConfiguration: g.buildDeviceConfig(),
 		Manufacturer:        sp(g.props["Build.MANUFACTURER"]),
 	}
-	data, _ := proto.Marshal(upload)
+	data, err := proto.Marshal(upload)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
 
-	req, _ := http.NewRequest("POST", gpUploadURL, bytes.NewReader(data))
+	req, err := http.NewRequest("POST", gpUploadURL, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("new request: %w", err)
+	}
 	g.setHeaders(req)
 	req.Header.Set("Content-Type", "application/x-protobuf")
 
 	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
-		return fmt.Errorf("upload config: %w", err)
+		return fmt.Errorf("request: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
 
 	var wrapper pb.ResponseWrapper
 	if err := proto.Unmarshal(body, &wrapper); err != nil {
-		return fmt.Errorf("upload config unmarshal: %w", err)
+		return fmt.Errorf("unmarshal response: %w", err)
 	}
 	if wrapper.Payload != nil && wrapper.Payload.UploadDeviceConfigResponse != nil {
 		if t := wrapper.Payload.UploadDeviceConfigResponse.UploadDeviceConfigToken; t != nil {
 			g.configToken = *t
 		}
 	}
-	g.debug("device config uploaded", "token", trunc(g.configToken, 30))
 	return nil
 }
 
-// --- toc ---
-
 func (g *GPlay) toc() error {
-	g.debug("fetching toc")
-	req, _ := http.NewRequest("GET", gpTocURL, nil)
+	req, err := http.NewRequest("GET", gpTocURL, nil)
+	if err != nil {
+		return fmt.Errorf("new request: %w", err)
+	}
 	g.setHeaders(req)
 
 	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
-		return fmt.Errorf("toc: %w", err)
+		return fmt.Errorf("request: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
 
 	var wrapper pb.ResponseWrapper
-	proto.Unmarshal(body, &wrapper)
+	if err := proto.Unmarshal(body, &wrapper); err != nil {
+		return fmt.Errorf("unmarshal toc: %w", err)
+	}
 	if wrapper.Payload != nil && wrapper.Payload.TocResponse != nil {
 		toc := wrapper.Payload.TocResponse
 		if toc.Cookie != nil {
 			g.dfeCookie = *toc.Cookie
 		}
 		if toc.TosToken != nil && toc.TosContent != nil {
-			g.debug("accepting TOS")
-			g.acceptTos(*toc.TosToken)
+			if err := g.acceptTos(*toc.TosToken); err != nil {
+				return fmt.Errorf("accept tos: %w", err)
+			}
 		}
 	}
-	g.debug("toc done", "cookie", trunc(g.dfeCookie, 30))
 	return nil
 }
 
-func (g *GPlay) acceptTos(token string) {
+func (g *GPlay) acceptTos(token string) error {
 	u := gpFdfeURL + "/acceptTos?tost=" + url.QueryEscape(token) + "&toscme=false"
-	req, _ := http.NewRequest("GET", u, nil)
-	g.setHeaders(req)
-	resp, _ := (&http.Client{}).Do(req)
-	if resp != nil {
-		resp.Body.Close()
+	req, err := http.NewRequest("GET", u, nil)
+	if err != nil {
+		return fmt.Errorf("new request: %w", err)
 	}
+	g.setHeaders(req)
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return fmt.Errorf("request: %w", err)
+	}
+	resp.Body.Close()
+	return nil
 }
-
-// --- headers ---
 
 func (g *GPlay) setHeaders(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+g.authSubToken)
@@ -386,53 +374,58 @@ func (g *GPlay) setHeaders(req *http.Request) {
 	}
 }
 
-// --- fdfe helpers ---
-
 func (g *GPlay) fdfeGet(u string) (*pb.ResponseWrapper, error) {
-	g.debug("fdfe GET", "url", u)
-	req, _ := http.NewRequest("GET", u, nil)
+	req, err := http.NewRequest("GET", u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("new request %s: %w", u, err)
+	}
 	g.setHeaders(req)
 	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get %s: %w", u, err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", u, err)
+	}
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("fdfe %d: %s", resp.StatusCode, trunc(string(body), 200))
+		return nil, fmt.Errorf("get %s: http %d: %s", u, resp.StatusCode, trunc(string(body), 200))
 	}
 	var wrapper pb.ResponseWrapper
 	if err := proto.Unmarshal(body, &wrapper); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshal %s: %w", u, err)
 	}
 	return &wrapper, nil
 }
 
 func (g *GPlay) fdfePost(u string) (*pb.ResponseWrapper, error) {
-	g.debug("fdfe POST", "url", u)
-	req, _ := http.NewRequest("POST", u, nil)
+	req, err := http.NewRequest("POST", u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("new request %s: %w", u, err)
+	}
 	g.setHeaders(req)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("post %s: %w", u, err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", u, err)
+	}
 	var wrapper pb.ResponseWrapper
 	if err := proto.Unmarshal(body, &wrapper); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshal %s: %w", u, err)
 	}
 	return &wrapper, nil
 }
 
-// --- search / resolve / download ---
-
 func (g *GPlay) Search(query string) ([]App, error) {
 	if err := g.init(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("gplay %s search init: %w", g.name, err)
 	}
-	g.debug("searching", "source", g.name, "query", query)
 
 	// exact package name -> details lookup
 	if strings.Contains(query, ".") && !strings.Contains(query, " ") {
@@ -446,18 +439,24 @@ func (g *GPlay) Search(query string) ([]App, error) {
 	}
 
 	u := gpSearchURL + "?c=3&q=" + url.QueryEscape(query) + "&ksm=1"
-	req, _ := http.NewRequest("GET", u, nil)
+	req, err := http.NewRequest("GET", u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("new request: %w", err)
+	}
 	g.setHeaders(req)
 	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("search request: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read search response: %w", err)
+	}
 
 	var wrapper pb.ResponseWrapper
 	if err := proto.Unmarshal(body, &wrapper); err != nil {
-		return nil, fmt.Errorf("search unmarshal: %w", err)
+		return nil, fmt.Errorf("unmarshal search: %w", err)
 	}
 
 	var payload *pb.Payload
@@ -467,7 +466,6 @@ func (g *GPlay) Search(query string) ([]App, error) {
 		payload = wrapper.Payload
 	}
 	if payload == nil || payload.ListResponse == nil || payload.ListResponse.Item == nil {
-		g.debug("search returned no results", "query", query)
 		return nil, nil
 	}
 
@@ -481,46 +479,39 @@ func (g *GPlay) Search(query string) ([]App, error) {
 			}
 		}
 	}
-	g.debug("search done", "query", query, "hits", len(apps))
 	return apps, nil
 }
 
 func (g *GPlay) Resolve(pkg string) (*App, error) {
 	if err := g.init(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("gplay %s resolve init: %w", g.name, err)
 	}
-	g.debug("resolving", "source", g.name, "pkg", pkg)
 
 	u := gpDetailsURL + "?doc=" + url.QueryEscape(pkg)
 	wrapper, err := g.fdfeGet(u)
 	if err != nil {
-		g.debug("resolve error", "pkg", pkg, "err", err)
-		return nil, nil
+		return nil, fmt.Errorf("gplay %s resolve %s: %w", g.name, pkg, err)
 	}
 	if wrapper.Payload == nil || wrapper.Payload.DetailsResponse == nil || wrapper.Payload.DetailsResponse.Item == nil {
-		g.debug("resolve: no item", "pkg", pkg)
 		return nil, nil
 	}
 	a, ok := itemToApp(wrapper.Payload.DetailsResponse.Item, g.name)
 	if !ok {
-		g.debug("resolve: itemToApp failed", "pkg", pkg)
 		return nil, nil
 	}
-	g.debug("resolved", "pkg", a.PackageName, "ver", a.Version)
 	return &a, nil
 }
 
 func (g *GPlay) Download(app App, dest string) (string, error) {
 	if err := g.init(); err != nil {
-		return "", err
+		return "", fmt.Errorf("gplay %s download init: %w", g.name, err)
 	}
-	g.debug("purchasing", "pkg", app.PackageName, "vc", app.VersionCode)
 
 	// purchase
 	purchU := fmt.Sprintf("%s?doc=%s&vc=%d&ot=1", gpPurchURL, url.QueryEscape(app.PackageName), app.VersionCode)
 	purchResp, err := g.fdfePost(purchU)
 	if err != nil {
-		return "", fmt.Errorf("purchase: %w", err)
+		return "", fmt.Errorf("purchase %s: %w", app.PackageName, err)
 	}
 	var dlToken string
 	if purchResp.Payload != nil && purchResp.Payload.BuyResponse != nil {
@@ -528,7 +519,6 @@ func (g *GPlay) Download(app App, dest string) (string, error) {
 			dlToken = *t
 		}
 	}
-	g.debug("purchase ok", "pkg", app.PackageName, "hasToken", dlToken != "")
 
 	// delivery
 	delivU := fmt.Sprintf("%s?doc=%s&vc=%d&ot=1", gpDelivURL, url.QueryEscape(app.PackageName), app.VersionCode)
@@ -537,7 +527,7 @@ func (g *GPlay) Download(app App, dest string) (string, error) {
 	}
 	delivResp, err := g.fdfeGet(delivU)
 	if err != nil {
-		return "", fmt.Errorf("delivery: %w", err)
+		return "", fmt.Errorf("delivery %s: %w", app.PackageName, err)
 	}
 	if delivResp.Payload == nil || delivResp.Payload.DeliveryResponse == nil || delivResp.Payload.DeliveryResponse.AppDeliveryData == nil {
 		return "", fmt.Errorf("no delivery data for %s", app.PackageName)
@@ -550,13 +540,14 @@ func (g *GPlay) Download(app App, dest string) (string, error) {
 	}
 
 	apkDir := filepath.Join(dest, fmt.Sprintf("%s-%s", app.PackageName, app.Version))
-	os.MkdirAll(apkDir, 0755)
+	if err := os.MkdirAll(apkDir, 0755); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", apkDir, err)
+	}
 
 	// base apk
 	basePath := filepath.Join(apkDir, "base.apk")
-	g.debug("downloading base apk", "pkg", app.PackageName)
 	if err := g.downloadFile(dlURL, dd.DownloadAuthCookie, basePath); err != nil {
-		return "", err
+		return "", fmt.Errorf("download base %s: %w", app.PackageName, err)
 	}
 
 	// split apks
@@ -566,35 +557,41 @@ func (g *GPlay) Download(app App, dest string) (string, error) {
 			continue
 		}
 		splitName := split.GetName() + ".apk"
-		g.debug("downloading split", "pkg", app.PackageName, "split", splitName)
-		g.downloadFile(splitURL, nil, filepath.Join(apkDir, splitName))
+		splitPath := filepath.Join(apkDir, splitName)
+		if err := g.downloadFile(splitURL, nil, splitPath); err != nil {
+			return "", fmt.Errorf("download split %s/%s: %w", app.PackageName, splitName, err)
+		}
 	}
 
 	return apkDir, nil
 }
 
 func (g *GPlay) downloadFile(dlURL string, cookies []*pb.HttpCookie, dest string) error {
-	req, _ := http.NewRequest("GET", dlURL, nil)
+	req, err := http.NewRequest("GET", dlURL, nil)
+	if err != nil {
+		return fmt.Errorf("new request: %w", err)
+	}
 	g.setHeaders(req)
 	for _, c := range cookies {
 		req.AddCookie(&http.Cookie{Name: c.GetName(), Value: c.GetValue()})
 	}
 	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("request: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("download: http %d", resp.StatusCode)
+		return fmt.Errorf("http %d", resp.StatusCode)
 	}
 	f, err := os.Create(dest)
 	if err != nil {
-		return err
+		return fmt.Errorf("create %s: %w", dest, err)
 	}
 	defer f.Close()
-	n, err := io.Copy(f, resp.Body)
-	g.debug("file written", "path", dest, "bytes", n)
-	return err
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		return fmt.Errorf("write %s: %w", dest, err)
+	}
+	return nil
 }
 
 func (g *GPlay) Refresh() error {
@@ -602,8 +599,6 @@ func (g *GPlay) Refresh() error {
 	g.props = nil
 	return g.init()
 }
-
-// --- proto helpers ---
 
 func (g *GPlay) buildDeviceConfig() *pb.DeviceConfigurationProto {
 	atoi := func(k string) int32 { v, _ := strconv.Atoi(g.props[k]); return int32(v) }
@@ -668,6 +663,5 @@ func trunc(s string, n int) string {
 	return s[:n] + "..."
 }
 
-// blobs
 const gplayEncodedTargets = "CAESN/qigQYC2AMBFfUbyA7SM5Ij/CvfBoIDgxHqGP8R3xzIBvoQtBKFDZ4HAY4FrwSVMasHBO0O2Q8akgYRAQECAQO7AQEpKZ0CnwECAwRrAQYBr9PPAoK7sQMBAQMCBAkIDAgBAwEDBAICBAUZEgMEBAMLAQEBBQEBAcYBARYED+cBfS8CHQEKkAEMMxcBIQoUDwYHIjd3DQ4MFk0JWGYZEREYAQOLAYEBFDMIEYMBAgICAgICOxkCD18LGQKEAcgDBIQBAgGLARkYCy8oBTJlBCUocxQn0QUBDkkGxgNZQq0BZSbeAmIDgAEBOgGtAaMCDAOQAZ4BBIEBKUtQUYYBQscDDxPSARA1oAEHAWmnAsMB2wFyywGLAxol+wImlwOOA80CtwN26A0WjwJVbQEJPAH+BRDeAfkHK/ABASEBCSAaHQemAzkaRiu2Ad8BdXeiAwEBGBUBBN4LEIABK4gB2AFLfwECAdoENq0CkQGMBsIBiQEtiwGgA1zyAUQ4uwS8AwhsvgPyAcEDF27vApsBHaICGhl3GSKxAR8MC6cBAgItmQYG9QIeywLvAeYBDArLAh8HASI4ELICDVmVBgsY/gHWARtcAsMBpALiAdsBA7QBpAJmIArpByn0AyAKBwHTARIHAX8D+AMBcRIBBbEDmwUBMacCHAciNp0BAQF0OgQLJDuSAh54kwFSP0eeAQQ4M5EBQgMEmwFXywFo0gFyWwMcapQBBugBPUW2AVgBKmy3AR6PAbMBGQxrUJECvQR+8gFoWDsYgQNwRSczBRXQAgtRswEW0ALMAREYAUEBIG6yATYCRE8OxgER8gMBvQEDRkwLc8MBTwHZAUOnAXiiBakDIbYBNNcCIUmuArIBSakBrgFHKs0EgwV/G3AD0wE6LgECtQJ4xQFwFbUCjQPkBS6vAQqEAUZF3QIM9wEhCoYCQhXsBCyZArQDugIziALWAdIBlQHwBdUErQE6qQaSA4EEIvYBHir9AQVLmgMCApsCKAwHuwgrENsBAjNYswEVmgIt7QJnN4wDEnta+wGfAcUBxgEtEFXQAQWdAUAeBcwBAQM7rAEJATJ0LENrdh73A6UBhAE+qwEeASxLZUMhDREuH0CGARbd7K0GlQo"
 const gplayPhenotype = "H4sIAAAAAAAAAB3OO3KjMAAA0KRNuWXukBkBQkAJ2MhgAZb5u2GCwQZbCH_EJ77QHmgvtDtbv-Z9_H63zXXU0NVPB1odlyGy7751Q3CitlPDvFd8lxhz3tpNmz7P92CFw73zdHU2Ie0Ad2kmR8lxhiErTFLt3RPGfJQHSDy7Clw10bg8kqf2owLokN4SecJTLoSwBnzQSd652_MOf2d1vKBNVedzg4ciPoLz2mQ8efGAgYeLou-l-PXn_7Sna1MfhHuySxt-4esulEDp8Sbq54CPPKjpANW-lkU2IZ0F92LBI-ukCKSptqeq1eXU96LD9nZfhKHdtjSWwJqUm_2r6pMHOxk01saVanmNopjX3YxQafC4iC6T55aRbC8nTI98AF_kItIQAJb5EQxnKTO7TZDWnr01HVPxelb9A2OWX6poidMWl16K54kcu_jhXw-JSBQkVcD_fPsLSZu6joIBAAA"

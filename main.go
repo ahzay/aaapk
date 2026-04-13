@@ -12,7 +12,7 @@ import (
 	"github.com/ahzay/aaapk/pkg/ledger"
 	"github.com/ahzay/aaapk/pkg/source"
 	"github.com/charmbracelet/log"
-	fuzzyfinder "github.com/ktr0731/go-fuzzyfinder"
+	"github.com/ktr0731/go-fuzzyfinder"
 	"github.com/urfave/cli/v2"
 )
 
@@ -27,9 +27,9 @@ func sources() []source.Source {
 	for _, r := range cfg.Enabled() {
 		switch r.Type {
 		case "fdroid":
-			out = append(out, source.NewFDroid(r.Name, r.URL, config.CacheDir(), logger))
+			out = append(out, source.NewFDroid(r.Name, r.URL, config.CacheDir()))
 		case "gplay":
-			out = append(out, source.NewGPlay(r.Name, r.Dispenser, logger))
+			out = append(out, source.NewGPlay(r.Name, r.Dispenser))
 		default:
 			logger.Warn("unknown repo type", "repo", r.Name, "type", r.Type)
 		}
@@ -67,16 +67,18 @@ func download(app *source.App) (string, error) {
 	return s.Download(*app, os.TempDir())
 }
 
-// installPath handles both single-file and split-apk directories.
 func installPath(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("stat %s: %w", path, err)
 	}
 	if !info.IsDir() {
 		return adb.Install(path)
 	}
-	entries, _ := os.ReadDir(path)
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return fmt.Errorf("readdir %s: %w", path, err)
+	}
 	var apks []string
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasSuffix(e.Name(), ".apk") {
@@ -84,7 +86,7 @@ func installPath(path string) error {
 		}
 	}
 	if len(apks) == 0 {
-		return fmt.Errorf("no apk files found in %s", path)
+		return fmt.Errorf("no apk files in %s", path)
 	}
 	if len(apks) == 1 {
 		return adb.Install(apks[0])
@@ -107,8 +109,6 @@ func queryFrom(c *cli.Context, label string) (string, error) {
 	return q, nil
 }
 
-// --- commands ---
-
 func cmdInstall(c *cli.Context) error {
 	if err := requireDevice(); err != nil {
 		return err
@@ -118,7 +118,10 @@ func cmdInstall(c *cli.Context) error {
 		return err
 	}
 	hits := search(q)
-	installed, _ := adb.InstalledPackages()
+	installed, err := adb.InstalledPackages()
+	if err != nil {
+		return fmt.Errorf("list installed: %w", err)
+	}
 	a, err := pickInstall(hits, installed)
 	if err != nil {
 		return err
@@ -127,20 +130,21 @@ func cmdInstall(c *cli.Context) error {
 	logger.Info("downloading", "pkg", a.PackageName, "ver", a.Version)
 	path, err := download(a)
 	if err != nil {
-		return err
+		return fmt.Errorf("download %s: %w", a.PackageName, err)
 	}
 	defer os.RemoveAll(path)
 
 	logger.Info("installing", "pkg", a.PackageName)
 	if err := installPath(path); err != nil {
-		return err
+		return fmt.Errorf("install %s: %w", a.PackageName, err)
 	}
 
 	l, err := ledger.Load()
 	if err != nil {
-		logger.Warn("ledger load failed", "err", err)
-	} else {
-		l.Set(a.PackageName, a.Version, a.Source, a.VersionCode)
+		return fmt.Errorf("ledger load: %w", err)
+	}
+	if err := l.Set(a.PackageName, a.Version, a.Source, a.VersionCode); err != nil {
+		return fmt.Errorf("ledger set: %w", err)
 	}
 	logger.Info("done", "pkg", a.PackageName)
 	return nil
@@ -209,7 +213,10 @@ func cmdUpdate(c *cli.Context) error {
 			continue
 		}
 		os.RemoveAll(path)
-		l.Set(cand.pkg, cand.latest.Version, cand.latest.Source, cand.latest.VersionCode)
+		if err := l.Set(cand.pkg, cand.latest.Version, cand.latest.Source, cand.latest.VersionCode); err != nil {
+			logger.Error("ledger update failed", "pkg", cand.pkg, "err", err)
+			continue
+		}
 		logger.Info("updated", "pkg", cand.pkg)
 	}
 	return nil
@@ -229,13 +236,11 @@ func cmdRefresh(c *cli.Context) error {
 
 func cmdList(c *cli.Context) error {
 	if err := requireDevice(); err != nil {
-		logger.Error("device not connected")
 		return err
 	}
 	l, err := ledger.Load()
 	if err != nil {
-		logger.Error("failed to load ledger", "err", err)
-		return nil
+		return fmt.Errorf("ledger: %w", err)
 	}
 	if len(l) == 0 {
 		logger.Info("no managed packages")
@@ -261,62 +266,6 @@ func cmdRepoList(c *cli.Context) error {
 		fmt.Printf("%-3s  %-15s  %-7s  %s\n", status, r.Name, r.Type, detail)
 	}
 	return nil
-}
-
-func cmdRepoAdd(c *cli.Context) error {
-	if c.NArg() < 1 {
-		return fmt.Errorf("usage: repo add <name> [url or dispenser]")
-	}
-	name := c.Args().Get(0)
-	typ := c.String("type")
-	cfg := config.Load()
-
-	switch typ {
-	case "fdroid":
-		if c.NArg() < 2 {
-			return fmt.Errorf("usage: repo add --type fdroid <name> <url>")
-		}
-		u := c.Args().Get(1)
-		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-			return fmt.Errorf("url must start with http:// or https://")
-		}
-		cfg.Repos = append(cfg.Repos, config.Repo{Name: name, Type: "fdroid", URL: u, Enabled: true})
-	case "gplay":
-		disp := "https://auroraoss.com/api/auth"
-		if c.NArg() >= 2 {
-			disp = c.Args().Get(1)
-		}
-		cfg.Repos = append(cfg.Repos, config.Repo{Name: name, Type: "gplay", Dispenser: disp, Enabled: true})
-	default:
-		return fmt.Errorf("unknown type %q (fdroid or gplay)", typ)
-	}
-	return cfg.Save()
-}
-
-func cmdRepoRm(c *cli.Context) error {
-	name := c.Args().First()
-	if name == "" {
-		return fmt.Errorf("rm what?")
-	}
-	cfg := config.Load()
-	if !cfg.Remove(name) {
-		return fmt.Errorf("not found: %s", name)
-	}
-	return cfg.Save()
-}
-
-func cmdRepoToggle(enabled bool) cli.ActionFunc {
-	return func(c *cli.Context) error {
-		name := c.Args().First()
-		if name == "" {
-			return fmt.Errorf("which repo?")
-		}
-		cfg := config.Load()
-		if !cfg.SetEnabled(name, enabled) {
-			return fmt.Errorf("not found: %s", name)
-		}
-		return cfg.Save()
-	}
 }
 
 // --- fuzzyfinder UI ---
@@ -470,15 +419,6 @@ func main() {
 			{Name: "list", Aliases: []string{"ls"}, Usage: "list managed packages", Action: cmdList},
 			{Name: "repo", Usage: "manage repos", Subcommands: []*cli.Command{
 				{Name: "list", Aliases: []string{"ls"}, Action: cmdRepoList},
-				{Name: "add", ArgsUsage: "<name> [url]", Usage: "add a repo",
-					Flags: []cli.Flag{
-						&cli.StringFlag{Name: "type", Aliases: []string{"t"}, Value: "fdroid", Usage: "fdroid or gplay"},
-					},
-					Action: cmdRepoAdd,
-				},
-				{Name: "rm", ArgsUsage: "<name>", Action: cmdRepoRm},
-				{Name: "enable", ArgsUsage: "<name>", Action: cmdRepoToggle(true)},
-				{Name: "disable", ArgsUsage: "<name>", Action: cmdRepoToggle(false)},
 			}},
 		},
 	}

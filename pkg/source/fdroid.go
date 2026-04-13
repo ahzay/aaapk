@@ -9,21 +9,17 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/charmbracelet/log"
 )
 
 type FDroid struct {
-	logged
 	name     string
 	baseURL  string
 	cacheDir string
 	index    *fdroidIndex
 }
 
-func NewFDroid(name, baseURL, cacheDir string, l *log.Logger) *FDroid {
+func NewFDroid(name, baseURL, cacheDir string) *FDroid {
 	return &FDroid{
-		logged:   logged{log: l},
 		name:     name,
 		baseURL:  strings.TrimRight(baseURL, "/"),
 		cacheDir: cacheDir,
@@ -62,61 +58,62 @@ func (f *FDroid) cachePath() string {
 	return filepath.Join(f.cacheDir, f.name+"-index.json")
 }
 
-func (f *FDroid) cacheOK() bool {
+func (f *FDroid) cacheValid() bool {
 	info, err := os.Stat(f.cachePath())
 	return err == nil && time.Since(info.ModTime()) < 24*time.Hour
 }
 
 func (f *FDroid) load() error {
 	if f.index != nil {
-		f.debug("index already loaded", "repo", f.name)
 		return nil
 	}
-	if f.cacheOK() {
-		f.debug("loading index from cache", "repo", f.name, "path", f.cachePath())
+	if f.cacheValid() {
 		data, err := os.ReadFile(f.cachePath())
-		if err == nil {
-			var idx fdroidIndex
-			if json.Unmarshal(data, &idx) == nil {
-				f.index = &idx
-				f.debug("cache hit", "repo", f.name, "apps", len(idx.Apps))
-				return nil
-			}
+		if err != nil {
+			return fmt.Errorf("read cache %s: %w", f.cachePath(), err)
 		}
-		f.debug("cache read failed, fetching", "repo", f.name)
+		var idx fdroidIndex
+		if err := json.Unmarshal(data, &idx); err != nil {
+			// cache corrupt, fall through to fetch
+			return f.fetch()
+		}
+		f.index = &idx
+		return nil
 	}
 	return f.fetch()
 }
 
 func (f *FDroid) fetch() error {
 	u := f.baseURL + "/index-v1.json"
-	f.info("fetching index", "repo", f.name, "url", u)
 	resp, err := http.Get(u)
 	if err != nil {
-		return err
+		return fmt.Errorf("fetch %s: %w", u, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("%s: http %d", f.name, resp.StatusCode)
+		return fmt.Errorf("fetch %s: http %d", u, resp.StatusCode)
 	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return fmt.Errorf("read body %s: %w", u, err)
 	}
 	var idx fdroidIndex
 	if err := json.Unmarshal(data, &idx); err != nil {
-		return err
+		return fmt.Errorf("unmarshal index %s: %w", f.name, err)
 	}
-	os.MkdirAll(f.cacheDir, 0755)
-	os.WriteFile(f.cachePath(), data, 0644)
-	f.debug("index cached", "repo", f.name, "apps", len(idx.Apps), "bytes", len(data))
+	if err := os.MkdirAll(f.cacheDir, 0755); err != nil {
+		return fmt.Errorf("mkdir cache %s: %w", f.cacheDir, err)
+	}
+	if err := os.WriteFile(f.cachePath(), data, 0644); err != nil {
+		return fmt.Errorf("write cache %s: %w", f.cachePath(), err)
+	}
 	f.index = &idx
 	return nil
 }
 
 func (f *FDroid) Refresh() error {
 	f.index = nil
-	os.Remove(f.cachePath())
+	_ = os.Remove(f.cachePath()) // best effort, fetch will overwrite anyway
 	return f.load()
 }
 
@@ -153,10 +150,9 @@ func (f *FDroid) resolve(a fdroidApp) App {
 
 func (f *FDroid) Search(query string) ([]App, error) {
 	if err := f.load(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("fdroid %s search: %w", f.name, err)
 	}
 	q := strings.ToLower(query)
-	f.debug("searching", "repo", f.name, "query", q)
 	var out []App
 	for _, a := range f.index.Apps {
 		r := f.resolve(a)
@@ -169,50 +165,48 @@ func (f *FDroid) Search(query string) ([]App, error) {
 			out = append(out, r)
 		}
 	}
-	f.debug("search done", "repo", f.name, "hits", len(out))
 	return out, nil
 }
 
 func (f *FDroid) Resolve(pkg string) (*App, error) {
 	if err := f.load(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("fdroid %s resolve: %w", f.name, err)
 	}
-	f.debug("resolving", "repo", f.name, "pkg", pkg)
 	for _, a := range f.index.Apps {
 		if a.PackageName == pkg {
 			r := f.resolve(a)
 			if r.APKURL == "" {
-				return nil, fmt.Errorf("no apk for %s", pkg)
+				return nil, fmt.Errorf("fdroid %s: no apk for %s", f.name, pkg)
 			}
-			f.debug("resolved", "repo", f.name, "pkg", pkg, "ver", r.Version)
 			return &r, nil
 		}
 	}
-	f.debug("not found", "repo", f.name, "pkg", pkg)
 	return nil, nil
 }
 
 func (f *FDroid) Download(app App, dest string) (string, error) {
 	if app.APKURL == "" {
-		return "", fmt.Errorf("no url for %s", app.PackageName)
+		return "", fmt.Errorf("fdroid %s: no url for %s", f.name, app.PackageName)
 	}
-	f.debug("downloading", "repo", f.name, "pkg", app.PackageName, "url", app.APKURL)
 	resp, err := http.Get(app.APKURL)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("fdroid download %s: %w", app.PackageName, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("download: http %d", resp.StatusCode)
+		return "", fmt.Errorf("fdroid download %s: http %d", app.PackageName, resp.StatusCode)
 	}
-	os.MkdirAll(dest, 0755)
+	if err := os.MkdirAll(dest, 0755); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", dest, err)
+	}
 	path := filepath.Join(dest, fmt.Sprintf("%s-%s.apk", app.PackageName, app.Version))
 	out, err := os.Create(path)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("create %s: %w", path, err)
 	}
 	defer out.Close()
-	n, _ := io.Copy(out, resp.Body)
-	f.debug("downloaded", "repo", f.name, "pkg", app.PackageName, "bytes", n)
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		return "", fmt.Errorf("write %s: %w", path, err)
+	}
 	return path, nil
 }
