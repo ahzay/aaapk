@@ -6,9 +6,14 @@ CLI package manager for Android over ADB. Works with F-Droid repos and Google Pl
 
 Xiaomi CN ROMs don't ship with Google Play or Play Services. The built-in store forces you to sign in with a Xiaomi account just to sideload third-party APKs.
 
-It can also be used for installing Google Play Services itself on these CN ROMs (tested on Redmi Note 13 Pro), so you can bootstrap a usable phone from a clean flash without installing shady third party utilities (looking at you Xiaomi Google Installer).
+It can also be used for installing Google Play Services itself on these CN ROMs (tested on Redmi Note 13 Pro):
+```bash
+aaapk install com.google.android.gms
+```
 
-Beyond Xiaomi devices, you shouldn't need to install Aurora Store just to get trusted APKs from the Play Store onto your device. aaapk does the same thing Aurora does (token dispenser, device checkin, delivery API) but from your terminal.
+so you can bootstrap a usable phone from a clean flash without installing shady third party utilities (looking at you Xiaomi Google Installer).
+
+Beyond Xiaomi devices, you shouldn't need to install Aurora Store just to get trusted APKs from the Play Store onto your device.
 
 ## Requirements
 
