@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -193,32 +194,40 @@ func cmdUpdate(c *cli.Context) error {
 		return nil
 	}
 
-	idxs, err := pickUpdate(candidates)
-	if err != nil {
-		return err
+	for len(candidates) > 0 {
+		idxs, err := pickUpdate(candidates)
+		if err != nil {
+			return nil
+		}
+
+		var updated []int
+		for _, idx := range idxs {
+			cand := candidates[idx]
+			logger.Info("downloading", "pkg", cand.pkg, "ver", cand.latest.Version)
+			path, err := download(&cand.latest)
+			if err != nil {
+				return fmt.Errorf("download %s: %w", cand.pkg, err)
+			}
+			logger.Info("installing", "pkg", cand.pkg)
+			if err := installPath(path); err != nil {
+				os.RemoveAll(path)
+				return fmt.Errorf("install %s: %w", cand.pkg, err)
+			}
+			os.RemoveAll(path)
+			if err := l.Set(cand.pkg, cand.latest.Version, cand.latest.Source, cand.latest.VersionCode); err != nil {
+				return fmt.Errorf("ledger update %s: %w", cand.pkg, err)
+			}
+			logger.Info("updated", "pkg", cand.pkg)
+			updated = append(updated, idx)
+		}
+
+		sort.Sort(sort.Reverse(sort.IntSlice(updated)))
+		for _, idx := range updated {
+			candidates = append(candidates[:idx], candidates[idx+1:]...)
+		}
 	}
 
-	for _, idx := range idxs {
-		cand := candidates[idx]
-		logger.Info("downloading", "pkg", cand.pkg, "ver", cand.latest.Version)
-		path, err := download(&cand.latest)
-		if err != nil {
-			logger.Error("download failed", "pkg", cand.pkg, "err", err)
-			continue
-		}
-		logger.Info("installing", "pkg", cand.pkg)
-		if err := installPath(path); err != nil {
-			logger.Error("install failed", "pkg", cand.pkg, "err", err)
-			os.RemoveAll(path)
-			continue
-		}
-		os.RemoveAll(path)
-		if err := l.Set(cand.pkg, cand.latest.Version, cand.latest.Source, cand.latest.VersionCode); err != nil {
-			logger.Error("ledger update failed", "pkg", cand.pkg, "err", err)
-			continue
-		}
-		logger.Info("updated", "pkg", cand.pkg)
-	}
+	logger.Info("everything up to date")
 	return nil
 }
 
