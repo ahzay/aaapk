@@ -171,21 +171,28 @@ func cmdUpdate(c *cli.Context) error {
 	}
 
 	srcs := sources()
+	srcByName := make(map[string]source.Source, len(srcs))
+	for _, s := range srcs {
+		srcByName[s.Name()] = s
+	}
+
 	var candidates []updateCandidate
 	for pkg, entry := range l {
-		for _, s := range srcs {
-			latest, err := s.Resolve(pkg)
-			if err != nil {
-				logger.Warn("resolve failed", "pkg", pkg, "repo", s.Name(), "err", err)
-				continue
-			}
-			if latest == nil {
-				continue
-			}
-			if latest.VersionCode > entry.VersionCode {
-				candidates = append(candidates, updateCandidate{pkg: pkg, current: entry, latest: *latest})
-			}
-			break
+		s, ok := srcByName[entry.Source]
+		if !ok {
+			logger.Warn("source not configured", "pkg", pkg, "source", entry.Source)
+			continue
+		}
+		latest, err := s.Resolve(pkg)
+		if err != nil {
+			logger.Warn("resolve failed", "pkg", pkg, "repo", s.Name(), "err", err)
+			continue
+		}
+		if latest == nil {
+			continue
+		}
+		if latest.VersionCode > entry.VersionCode {
+			candidates = append(candidates, updateCandidate{pkg: pkg, current: entry, latest: *latest})
 		}
 	}
 
