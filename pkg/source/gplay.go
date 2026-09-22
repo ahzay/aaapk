@@ -9,24 +9,20 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"time"
 
-	"github.com/ahzay/aaapk/pkg/adb"
 	pb "github.com/ahzay/aaapk/pkg/source/gplay/proto"
 	"google.golang.org/protobuf/proto"
 )
 
 const (
 	gpBaseURL    = "https://android.clients.google.com"
-	gpCheckinURL = gpBaseURL + "/checkin"
 	gpFdfeURL    = gpBaseURL + "/fdfe"
 	gpDetailsURL = gpFdfeURL + "/details"
 	gpSearchURL  = gpFdfeURL + "/search"
 	gpPurchURL   = gpFdfeURL + "/purchase"
 	gpDelivURL   = gpFdfeURL + "/delivery"
-	gpTocURL     = gpFdfeURL + "/toc"
-	gpUploadURL  = gpFdfeURL + "/uploadDeviceConfig"
 )
 
 type GPlay struct {
@@ -34,12 +30,11 @@ type GPlay struct {
 	dispenserURL string
 
 	email, authToken, authSubToken string
-	gsfID, securityToken           uint64
+	gsfID                          string
 	checkinToken                   string
 	configToken                    string
 	dfeCookie                      string
 
-	props map[string]string
 	ready bool
 }
 
@@ -56,303 +51,82 @@ func (g *GPlay) init() error {
 	if g.ready {
 		return nil
 	}
-	if err := g.loadDeviceProps(); err != nil {
-		return fmt.Errorf("gplay %s device props: %w", g.name, err)
-	}
 	if err := g.dispenserAuth(); err != nil {
 		return fmt.Errorf("gplay %s dispenser: %w", g.name, err)
-	}
-	g.authSubToken = g.authToken
-	if err := g.checkin(); err != nil {
-		return fmt.Errorf("gplay %s checkin: %w", g.name, err)
-	}
-	if err := g.uploadDeviceConfig(); err != nil {
-		return fmt.Errorf("gplay %s upload config: %w", g.name, err)
-	}
-	if err := g.toc(); err != nil {
-		return fmt.Errorf("gplay %s toc: %w", g.name, err)
 	}
 	g.ready = true
 	return nil
 }
 
-func (g *GPlay) loadDeviceProps() error {
-	if g.props != nil {
-		return nil
-	}
-	gp, err := adb.GetProperties()
-	if err != nil {
-		return fmt.Errorf("getprop: %w", err)
-	}
-
-	w, h := adb.ScreenSize()
-	density := adb.ScreenDensity()
-	features := adb.Features()
-	libraries := adb.Libraries()
-
-	radio := gp["gsm.version.baseband"]
-	if radio == "" {
-		radio = "unknown"
-	}
-	abis := gp["ro.product.cpu.abilist"]
-	if abis == "" {
-		abis = gp["ro.product.cpu.abi"]
-	}
-
-	g.props = map[string]string{
-		"Build.HARDWARE":        gp["ro.hardware"],
-		"Build.RADIO":           radio,
-		"Build.FINGERPRINT":     gp["ro.build.fingerprint"],
-		"Build.BRAND":           gp["ro.product.brand"],
-		"Build.DEVICE":          gp["ro.product.device"],
-		"Build.VERSION.SDK_INT": gp["ro.build.version.sdk"],
-		"Build.VERSION.RELEASE": gp["ro.build.version.release"],
-		"Build.MODEL":           gp["ro.product.model"],
-		"Build.MANUFACTURER":    gp["ro.product.manufacturer"],
-		"Build.PRODUCT":         gp["ro.product.name"],
-		"Build.ID":              gp["ro.build.id"],
-		"Build.BOOTLOADER":      gp["ro.bootloader"],
-		"UserReadableName":      gp["ro.product.manufacturer"] + " " + gp["ro.product.model"],
-		"Screen.Width":          w,
-		"Screen.Height":         h,
-		"Screen.Density":        density,
-		"Platforms":             abis,
-		"TouchScreen":           "3",
-		"Keyboard":              "1",
-		"Navigation":            "1",
-		"ScreenLayout":          "2",
-		"HasHardKeyboard":       "false",
-		"HasFiveWayNavigation":  "false",
-		"GL.Version":            "196610",
-		"GL.Extensions":         "",
-		"Features":              strings.Join(features, ","),
-		"SharedLibraries":       strings.Join(libraries, ","),
-		"Locales":               "en,en_US",
-		"Client":                "android-google",
-		"GSF.version":           "223616055",
-		"Vending.version":       "82151710",
-		"Vending.versionString": "21.5.17-21 [0] [PR] 326734551",
-		"Roaming":               "mobile-notroaming",
-		"TimeZone":              "UTC-10",
-		"CellOperator":          "310",
-		"SimOperator":           "38",
-	}
-	return nil
-}
-
 func (g *GPlay) dispenserAuth() error {
-	body, err := json.Marshal(g.props)
+	body, err := json.Marshal(gplayDeviceProps)
 	if err != nil {
 		return fmt.Errorf("marshal props: %w", err)
 	}
-	req, err := http.NewRequest("POST", g.dispenserURL, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("new request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "com.aurora.store-4.8.1-73")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Connection", "keep-alive")
 
-	resp, err := (&http.Client{}).Do(req)
-	if err != nil {
-		return fmt.Errorf("request: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("http %d: %s", resp.StatusCode, trunc(string(b), 200))
-	}
-
-	var dr struct {
-		Email     string `json:"email"`
-		AuthToken string `json:"authToken"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&dr); err != nil {
-		return fmt.Errorf("decode response: %w", err)
-	}
-	g.email = dr.Email
-	g.authToken = dr.AuthToken
-	return nil
-}
-
-func (g *GPlay) checkin() error {
-	sdkInt, _ := strconv.Atoi(g.props["Build.VERSION.SDK_INT"])
-	gsfVer, _ := strconv.Atoi(g.props["GSF.version"])
-
-	build := &pb.AndroidBuildProto{
-		Id:             sp(g.props["Build.FINGERPRINT"]),
-		Product:        sp(g.props["Build.HARDWARE"]),
-		Carrier:        sp(g.props["Build.BRAND"]),
-		Radio:          sp(g.props["Build.RADIO"]),
-		Bootloader:     sp(g.props["Build.BOOTLOADER"]),
-		Client:         sp(g.props["Client"]),
-		Timestamp:      ip64(0),
-		GoogleServices: ip32(int32(gsfVer)),
-		Device:         sp(g.props["Build.DEVICE"]),
-		SdkVersion:     ip32(int32(sdkInt)),
-		Model:          sp(g.props["Build.MODEL"]),
-		Manufacturer:   sp(g.props["Build.MANUFACTURER"]),
-		BuildProduct:   sp(g.props["Build.PRODUCT"]),
-		OtaInstalled:   bp(false),
-	}
-
-	deviceConfig := g.buildDeviceConfig()
-
-	checkinReq := &pb.AndroidCheckinRequest{
-		Checkin: &pb.AndroidCheckinProto{
-			Build:        build,
-			CellOperator: sp(g.props["CellOperator"]),
-			SimOperator:  sp(g.props["SimOperator"]),
-			Roaming:      sp(g.props["Roaming"]),
-		},
-		Locale:              sp("en_US"),
-		TimeZone:            sp(g.props["TimeZone"]),
-		Version:             ip32(3),
-		DeviceConfiguration: deviceConfig,
-		Fragment:            ip32(0),
-	}
-
-	data, err := proto.Marshal(checkinReq)
-	if err != nil {
-		return fmt.Errorf("marshal checkin: %w", err)
-	}
-
-	resp, err := http.Post(gpCheckinURL, "application/x-protobuf", bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("post checkin: %w", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read checkin response: %w", err)
-	}
-
-	var checkinResp pb.AndroidCheckinResponse
-	if err := proto.Unmarshal(body, &checkinResp); err != nil {
-		return fmt.Errorf("unmarshal checkin response: %w", err)
-	}
-
-	g.gsfID = checkinResp.GetAndroidId()
-	g.securityToken = checkinResp.GetSecurityToken()
-	if checkinResp.DeviceCheckinConsistencyToken != nil {
-		g.checkinToken = *checkinResp.DeviceCheckinConsistencyToken
-	}
-
-	// second pass with account cookies
-	checkinReq.Id = ip64(int64(g.gsfID))
-	checkinReq.SecurityToken = &g.securityToken
-	checkinReq.AccountCookie = []string{"[" + g.email + "]", g.authToken}
-
-	data, err = proto.Marshal(checkinReq)
-	if err != nil {
-		return fmt.Errorf("marshal checkin2: %w", err)
-	}
-	resp2, err := http.Post(gpCheckinURL, "application/x-protobuf", bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("post checkin2: %w", err)
-	}
-	resp2.Body.Close()
-	return nil
-}
-
-func (g *GPlay) uploadDeviceConfig() error {
-	upload := &pb.UploadDeviceConfigRequest{
-		DeviceConfiguration: g.buildDeviceConfig(),
-		Manufacturer:        sp(g.props["Build.MANUFACTURER"]),
-	}
-	data, err := proto.Marshal(upload)
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", gpUploadURL, bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("new request: %w", err)
-	}
-	g.setHeaders(req)
-	req.Header.Set("Content-Type", "application/x-protobuf")
-
-	resp, err := (&http.Client{}).Do(req)
-	if err != nil {
-		return fmt.Errorf("request: %w", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read response: %w", err)
-	}
-
-	var wrapper pb.ResponseWrapper
-	if err := proto.Unmarshal(body, &wrapper); err != nil {
-		return fmt.Errorf("unmarshal response: %w", err)
-	}
-	if wrapper.Payload != nil && wrapper.Payload.UploadDeviceConfigResponse != nil {
-		if t := wrapper.Payload.UploadDeviceConfigResponse.UploadDeviceConfigToken; t != nil {
-			g.configToken = *t
+	client := &http.Client{Timeout: 30 * time.Second}
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		req, err := http.NewRequest("POST", g.dispenserURL, bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("new request: %w", err)
 		}
-	}
-	return nil
-}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", "com.aurora.store-4.8.1-73")
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Connection", "keep-alive")
 
-func (g *GPlay) toc() error {
-	req, err := http.NewRequest("GET", gpTocURL, nil)
-	if err != nil {
-		return fmt.Errorf("new request: %w", err)
-	}
-	g.setHeaders(req)
-
-	resp, err := (&http.Client{}).Do(req)
-	if err != nil {
-		return fmt.Errorf("request: %w", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read response: %w", err)
-	}
-
-	var wrapper pb.ResponseWrapper
-	if err := proto.Unmarshal(body, &wrapper); err != nil {
-		return fmt.Errorf("unmarshal toc: %w", err)
-	}
-	if wrapper.Payload != nil && wrapper.Payload.TocResponse != nil {
-		toc := wrapper.Payload.TocResponse
-		if toc.Cookie != nil {
-			g.dfeCookie = *toc.Cookie
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("request: %w", err)
 		}
-		if toc.TosToken != nil && toc.TosContent != nil {
-			if err := g.acceptTos(*toc.TosToken); err != nil {
-				return fmt.Errorf("accept tos: %w", err)
+		raw, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return fmt.Errorf("read response: %w", err)
+		}
+
+		if resp.StatusCode == 200 {
+			var bundle struct {
+				Email        string `json:"email"`
+				AuthToken    string `json:"authToken"`
+				GSFID        string `json:"gsfId"`
+				CheckinToken string `json:"deviceCheckInConsistencyToken"`
+				ConfigToken  string `json:"deviceConfigToken"`
+				DFECookie    string `json:"dfeCookie"`
 			}
+			if err := json.Unmarshal(raw, &bundle); err != nil {
+				return fmt.Errorf("decode response: %w", err)
+			}
+			if bundle.GSFID == "" {
+				return fmt.Errorf("empty gsfId from dispenser")
+			}
+			if bundle.AuthToken == "" {
+				return fmt.Errorf("empty authToken from dispenser")
+			}
+			g.email = bundle.Email
+			g.authToken = bundle.AuthToken
+			g.authSubToken = bundle.AuthToken
+			g.gsfID = bundle.GSFID
+			g.checkinToken = bundle.CheckinToken
+			g.configToken = bundle.ConfigToken
+			g.dfeCookie = bundle.DFECookie
+			return nil
 		}
-	}
-	return nil
-}
 
-func (g *GPlay) acceptTos(token string) error {
-	u := gpFdfeURL + "/acceptTos?tost=" + url.QueryEscape(token) + "&toscme=false"
-	req, err := http.NewRequest("GET", u, nil)
-	if err != nil {
-		return fmt.Errorf("new request: %w", err)
+		lastErr = fmt.Errorf("http %d: %s", resp.StatusCode, trunc(string(raw), 200))
+		if resp.StatusCode != 429 && resp.StatusCode < 500 {
+			break
+		}
+		time.Sleep(time.Duration(attempt) * time.Second)
 	}
-	g.setHeaders(req)
-	resp, err := (&http.Client{}).Do(req)
-	if err != nil {
-		return fmt.Errorf("request: %w", err)
-	}
-	resp.Body.Close()
-	return nil
+	return lastErr
 }
 
 func (g *GPlay) setHeaders(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+g.authSubToken)
-	req.Header.Set("User-Agent", fmt.Sprintf(
-		"Android-Finsky/29.2.15-21 [0] [PR] 426536134 (api=3,versionCode=82921510,sdk=%s,device=%s,hardware=%s,product=%s,build=%s:us)",
-		g.props["Build.VERSION.SDK_INT"], g.props["Build.DEVICE"],
-		g.props["Build.HARDWARE"], g.props["Build.PRODUCT"], g.props["Build.ID"],
-	))
-	req.Header.Set("X-DFE-Device-Id", fmt.Sprintf("%x", g.gsfID))
+	req.Header.Set("User-Agent", gplayUserAgent())
+	req.Header.Set("X-DFE-Device-Id", g.gsfID)
 	req.Header.Set("Accept-Language", "en-US")
 	req.Header.Set("X-DFE-Client-Id", "am-android-google")
 	req.Header.Set("X-DFE-Network-Type", "4")
@@ -596,39 +370,7 @@ func (g *GPlay) downloadFile(dlURL string, cookies []*pb.HttpCookie, dest string
 
 func (g *GPlay) Refresh() error {
 	g.ready = false
-	g.props = nil
 	return g.init()
-}
-
-func (g *GPlay) buildDeviceConfig() *pb.DeviceConfigurationProto {
-	atoi := func(k string) int32 { v, _ := strconv.Atoi(g.props[k]); return int32(v) }
-
-	cfg := &pb.DeviceConfigurationProto{
-		TouchScreen:          ip32(atoi("TouchScreen")),
-		Keyboard:             ip32(atoi("Keyboard")),
-		Navigation:           ip32(atoi("Navigation")),
-		ScreenLayout:         ip32(atoi("ScreenLayout")),
-		ScreenDensity:        ip32(atoi("Screen.Density")),
-		GlEsVersion:          ip32(atoi("GL.Version")),
-		ScreenWidth:          ip32(atoi("Screen.Width")),
-		ScreenHeight:         ip32(atoi("Screen.Height")),
-		HasHardKeyboard:      bp(g.props["HasHardKeyboard"] == "true"),
-		HasFiveWayNavigation: bp(g.props["HasFiveWayNavigation"] == "true"),
-	}
-
-	split := func(k string) []string {
-		if v := g.props[k]; v != "" {
-			return strings.Split(v, ",")
-		}
-		return nil
-	}
-	cfg.NativePlatform = split("Platforms")
-	cfg.SystemAvailableFeature = split("Features")
-	cfg.SystemSharedLibrary = split("SharedLibraries")
-	cfg.SystemSupportedLocale = split("Locales")
-	cfg.GlExtension = split("GL.Extensions")
-
-	return cfg
 }
 
 func itemToApp(item *pb.Item, source string) (App, bool) {
@@ -651,16 +393,21 @@ func itemToApp(item *pb.Item, source string) (App, bool) {
 	}, true
 }
 
-func sp(s string) *string { return &s }
-func ip32(i int32) *int32 { return &i }
-func ip64(i int64) *int64 { return &i }
-func bp(b bool) *bool     { return &b }
-
 func trunc(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+func gplayUserAgent() string {
+	p := gplayDeviceProps
+	return fmt.Sprintf(
+		"Android-Finsky/%s (api=3,versionCode=%s,sdk=%s,device=%s,hardware=%s,product=%s,platformVersionRelease=%s,model=%s,buildId=%s,isWideScreen=0,supportedAbis=%s)",
+		p["Vending.versionString"], p["Vending.version"], p["Build.VERSION.SDK_INT"],
+		p["Build.DEVICE"], p["Build.HARDWARE"], p["Build.PRODUCT"],
+		p["Build.VERSION.RELEASE"], p["Build.MODEL"], p["Build.ID"], p["Platforms"],
+	)
 }
 
 const gplayEncodedTargets = "CAESN/qigQYC2AMBFfUbyA7SM5Ij/CvfBoIDgxHqGP8R3xzIBvoQtBKFDZ4HAY4FrwSVMasHBO0O2Q8akgYRAQECAQO7AQEpKZ0CnwECAwRrAQYBr9PPAoK7sQMBAQMCBAkIDAgBAwEDBAICBAUZEgMEBAMLAQEBBQEBAcYBARYED+cBfS8CHQEKkAEMMxcBIQoUDwYHIjd3DQ4MFk0JWGYZEREYAQOLAYEBFDMIEYMBAgICAgICOxkCD18LGQKEAcgDBIQBAgGLARkYCy8oBTJlBCUocxQn0QUBDkkGxgNZQq0BZSbeAmIDgAEBOgGtAaMCDAOQAZ4BBIEBKUtQUYYBQscDDxPSARA1oAEHAWmnAsMB2wFyywGLAxol+wImlwOOA80CtwN26A0WjwJVbQEJPAH+BRDeAfkHK/ABASEBCSAaHQemAzkaRiu2Ad8BdXeiAwEBGBUBBN4LEIABK4gB2AFLfwECAdoENq0CkQGMBsIBiQEtiwGgA1zyAUQ4uwS8AwhsvgPyAcEDF27vApsBHaICGhl3GSKxAR8MC6cBAgItmQYG9QIeywLvAeYBDArLAh8HASI4ELICDVmVBgsY/gHWARtcAsMBpALiAdsBA7QBpAJmIArpByn0AyAKBwHTARIHAX8D+AMBcRIBBbEDmwUBMacCHAciNp0BAQF0OgQLJDuSAh54kwFSP0eeAQQ4M5EBQgMEmwFXywFo0gFyWwMcapQBBugBPUW2AVgBKmy3AR6PAbMBGQxrUJECvQR+8gFoWDsYgQNwRSczBRXQAgtRswEW0ALMAREYAUEBIG6yATYCRE8OxgER8gMBvQEDRkwLc8MBTwHZAUOnAXiiBakDIbYBNNcCIUmuArIBSakBrgFHKs0EgwV/G3AD0wE6LgECtQJ4xQFwFbUCjQPkBS6vAQqEAUZF3QIM9wEhCoYCQhXsBCyZArQDugIziALWAdIBlQHwBdUErQE6qQaSA4EEIvYBHir9AQVLmgMCApsCKAwHuwgrENsBAjNYswEVmgIt7QJnN4wDEnta+wGfAcUBxgEtEFXQAQWdAUAeBcwBAQM7rAEJATJ0LENrdh73A6UBhAE+qwEeASxLZUMhDREuH0CGARbd7K0GlQo"

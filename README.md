@@ -50,7 +50,7 @@ Pass `--debug` before the command for verbose output.
 
 ## How it works
 
-Searches all enabled repos in parallel. F-Droid repos are queried via their `index-v1.json`. Google Play is accessed through Aurora's token dispenser, doing a device checkin with your phone's actual properties read over ADB.
+Searches all enabled repos in parallel. F-Droid repos are queried via their `index-v1.json`. Google Play is accessed through Aurora's token dispenser, which returns a ready-to-use auth bundle (token, device id, config/cookie) for anonymous access.
 
 ## Files
 
