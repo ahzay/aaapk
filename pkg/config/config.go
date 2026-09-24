@@ -10,6 +10,7 @@ type Repo struct {
 	Name      string `json:"name"`
 	Type      string `json:"type"`
 	URL       string `json:"url,omitempty"`
+	Repo      string `json:"repo,omitempty"`
 	Dispenser string `json:"dispenser,omitempty"`
 	Enabled   bool   `json:"enabled"`
 }

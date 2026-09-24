@@ -31,6 +31,8 @@ func sources() []source.Source {
 			out = append(out, source.NewFDroid(r.Name, r.URL, config.CacheDir()))
 		case "gplay":
 			out = append(out, source.NewGPlay(r.Name, r.Dispenser))
+		case "github":
+			out = append(out, source.NewGitHub(r.Name, r.Repo))
 		default:
 			logger.Warn("unknown repo type", "repo", r.Name, "type", r.Type)
 		}
@@ -278,6 +280,8 @@ func cmdRepoList(c *cli.Context) error {
 		detail := r.URL
 		if r.Type == "gplay" {
 			detail = r.Dispenser
+		} else if r.Type == "github" {
+			detail = r.Repo
 		}
 		fmt.Printf("%-3s  %-15s  %-7s  %s\n", status, r.Name, r.Type, detail)
 	}
